@@ -91,9 +91,14 @@ class AudioEngine:
         self._block_size = int(self.cfg.block_size)
         self._sample_rate = int(self.cfg.sample_rate)
         self._channels = int(self.cfg.channels)
-        self._buffer_blocks = max(1, int(self.cfg.buffer_blocks))
         self._use_ml = bool(getattr(self.cfg, "use_ml", False))
         self._use_hybrid = bool(getattr(self.cfg, "use_hybrid", False))
+        self._buffer_blocks = max(1, int(self.cfg.buffer_blocks))
+        if self._use_ml or self._use_hybrid:
+            min_blocks = int(np.ceil((self._sample_rate * 0.5) / max(1, self._block_size))) + 8
+        else:
+            min_blocks = 8
+        self._buffer_blocks = max(self._buffer_blocks, min_blocks)
         self._monitor_enabled = bool(getattr(self.cfg, "monitor_enabled", False))
         self._monitor_device = getattr(self.cfg, "monitor_device", None)
         self._noise_reduction = float(getattr(self.cfg, "noise_reduction", 0.6))
@@ -346,7 +351,11 @@ class AudioEngine:
             else:
                 self._pending_in = np.concatenate([self._pending_in, block], axis=0)
 
-            chunk_frames = max(self._block_size, self._block_size * 4)
+            if self._use_ml or self._use_hybrid:
+                chunk_frames = max(self._block_size * 4, int(self._sample_rate * 0.5))
+            else:
+                chunk_frames = max(self._block_size, self._block_size * 4)
+            chunk_frames = ((chunk_frames + self._block_size - 1) // self._block_size) * self._block_size
             while self._pending_in is not None and self._pending_in.shape[0] >= chunk_frames:
                 chunk = self._pending_in[:chunk_frames]
                 self._pending_in = self._pending_in[chunk_frames:]
@@ -371,13 +380,22 @@ class AudioEngine:
             if self._pending_in is not None and self._pending_in.shape[0] > 0:
                 pending = self._pending_in
                 bs = self._block_size
+                if self._use_ml or self._use_hybrid:
+                    min_frames = ((int(self._sample_rate * 0.5) + bs - 1) // bs) * bs
+                else:
+                    min_frames = bs
+                if pending.shape[0] < min_frames:
+                    pad = min_frames - pending.shape[0]
+                    if pending.ndim == 2:
+                        pending = np.pad(pending, ((0, pad), (0, 0)))
+                    else:
+                        pending = np.pad(pending, (0, pad)).reshape(-1, 1)
                 if pending.shape[0] % bs:
                     pad = bs - (pending.shape[0] % bs)
                     if pending.ndim == 2:
                         pending = np.pad(pending, ((0, pad), (0, 0)))
                     else:
-                        pending = np.pad(pending, (0, pad))
-                        pending = pending.reshape(-1, 1)
+                        pending = np.pad(pending, (0, pad)).reshape(-1, 1)
                 if pending.ndim == 1:
                     pending = pending.reshape(-1, 1)
                 processed = self._process_block(pending)
