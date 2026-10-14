@@ -1,0 +1,1 @@
+"""Audio capture, processing, and playback components."""

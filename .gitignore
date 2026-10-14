@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+build/
+dist/
+*.spec
+results/
+# Keep the small ONNX model/data files needed to run the project.
+venv/
+.env
+*.log

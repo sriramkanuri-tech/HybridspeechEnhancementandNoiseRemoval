@@ -1,0 +1,11 @@
+numpy>=1.26
+scipy>=1.11
+sounddevice>=0.5
+PySide6>=6.6
+librosa>=1.0
+soundfile>=0.12
+psutil>=5.9
+matplotlib>=3.8
+pytest>=8.0
+pytest-qt>=4.3
+pyinstaller>=6.0
