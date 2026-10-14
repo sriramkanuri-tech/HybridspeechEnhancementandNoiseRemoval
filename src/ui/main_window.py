@@ -6,6 +6,15 @@ import os
 import sys
 import threading
 import webbrowser
+
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    MATPLOTLIB_AVAILABLE = True
+except Exception:
+    Figure = None
+    FigureCanvas = None
+    MATPLOTLIB_AVAILABLE = False
 import time
 from pathlib import Path
 
@@ -293,6 +302,14 @@ class MainWindow(QMainWindow):
         self.metrics_table.setColumnCount(6)
         self.metrics_table.setHorizontalHeaderLabels(["Method", "Duration (s)", "RMS", "Peak", "Proc Time (s)", "RTF"])
         rec_layout.addWidget(self.metrics_table)
+
+        if MATPLOTLIB_AVAILABLE:
+            self.results_figure = Figure(figsize=(6, 3), tight_layout=True)
+            self.results_canvas = FigureCanvas(self.results_figure)
+            rec_layout.addWidget(self.results_canvas)
+        else:
+            self.results_figure = None
+            self.results_canvas = None
 
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
@@ -617,6 +634,7 @@ class MainWindow(QMainWindow):
             self.metrics_table.setItem(row, 4, QTableWidgetItem(f"{info.get('process_time', 0):.4f}"))
             self.metrics_table.setItem(row, 5, QTableWidgetItem(f"{info.get('rtf', 0):.4f}"))
         self.results_text.append("Enhancement complete. Files saved in " + str(self.session_dir))
+        self._plot_results(res)
         # try generate report
         try:
             from src.evaluation.report import generate_pdf_report
@@ -624,6 +642,32 @@ class MainWindow(QMainWindow):
             self.results_text.append("PDF report generated.")
         except Exception as e:
             self.results_text.append("PDF generation failed: " + str(e))
+
+    def _plot_results(self, res):
+        if not (MATPLOTLIB_AVAILABLE and self.results_canvas is not None):
+            return
+        try:
+            fig = self.results_figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            methods = []
+            rms_values = []
+            for method, info in res.items():
+                if "error" in info:
+                    continue
+                methods.append(method)
+                rms_values.append(float(info.get("rms", 0.0)))
+            if methods:
+                ax.bar(methods, rms_values, color="#4a90d9")
+                ax.set_title("Enhanced output RMS by method")
+                ax.set_ylabel("RMS")
+                ax.tick_params(axis="x", rotation=20)
+            else:
+                ax.text(0.5, 0.5, "No successful enhancement results", ha="center", va="center")
+                ax.set_axis_off()
+            self.results_canvas.draw_idle()
+        except Exception as e:
+            self.results_text.append("Plot update failed: " + str(e))
 
     def open_output_folder(self):
         if self.session_dir is None:

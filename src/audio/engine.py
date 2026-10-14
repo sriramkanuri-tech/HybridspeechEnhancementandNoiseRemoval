@@ -68,6 +68,7 @@ class AudioEngine:
         self._in_q: queue.Queue = queue.Queue(maxsize=getattr(cfg, "buffer_blocks", 8) or 8)
         self._out_q: queue.Queue = queue.Queue(maxsize=getattr(cfg, "buffer_blocks", 8) or 8)
         self._monitor_q: queue.Queue = queue.Queue(maxsize=getattr(cfg, "buffer_blocks", 8) or 8)
+        self._pending_in = None
         self._monitor_stream = None
 
     # ------------------------------------------------------------------ utils
@@ -103,6 +104,7 @@ class AudioEngine:
         self._in_q = queue.Queue(maxsize=self._buffer_blocks)
         self._out_q = queue.Queue(maxsize=self._buffer_blocks)
         self._monitor_q = queue.Queue(maxsize=self._buffer_blocks)
+        self._pending_in = None
 
     def _update_status_value(self, **kwargs):
         with self._lock:
@@ -218,7 +220,7 @@ class AudioEngine:
         else:
             audio_in = x
         audio_in = np.asarray(audio_in, dtype=np.float32).reshape(-1)
-        bs = self._block_size
+        n_frames = max(1, audio_in.size)
 
         t0 = time.perf_counter()
         if self._use_hybrid:
@@ -269,12 +271,12 @@ class AudioEngine:
             else:
                 y = np.column_stack([y[:, 0], y[:, 0]])
 
-        # Frame count match to avoid callback desync.
-        if y.shape[0] != bs:
-            if y.shape[0] > bs:
-                y = y[:bs, ...]
+        # Preserve the processed frame count (do not force a fixed block size).
+        if y.shape[0] != n_frames:
+            if y.shape[0] > n_frames:
+                y = y[:n_frames, ...]
             else:
-                pad = bs - y.shape[0]
+                pad = n_frames - y.shape[0]
                 if y.ndim == 2:
                     y = np.pad(y, ((0, pad), (0, 0)))
                 else:
@@ -286,6 +288,34 @@ class AudioEngine:
         logger.debug("processed block mode=%s frames=%d duration_ms=%.2f", mode, y.shape[0], dt)
         self._update_status_value(process_ms=dt, model_mode=mode)
         return y.astype(np.float32)
+
+    def _enqueue_processed(self, processed):
+        processed = np.asarray(processed)
+        bs = self._block_size
+        n = processed.shape[0]
+        # Ensure a whole multiple of the output callback block.
+        if n % bs:
+            pad = bs - (n % bs)
+            if processed.ndim == 2:
+                processed = np.pad(processed, ((0, pad), (0, 0)))
+            else:
+                processed = np.pad(processed, (0, pad))
+            n = processed.shape[0]
+        for i in range(0, n, bs):
+            piece = processed[i:i + bs]
+            if piece.ndim == 1:
+                piece = piece.reshape(-1, 1)
+            try:
+                self._out_q.put(piece.astype(np.float32), timeout=0.2)
+            except queue.Full:
+                with self._lock:
+                    self.status.overflows += 1
+            if self._monitor_enabled:
+                try:
+                    self._monitor_q.put(piece.astype(np.float32).copy(), timeout=0.2)
+                except queue.Full:
+                    with self._lock:
+                        self.status.overflows += 1
 
     def _processor(self):
         while not self._stop_event.is_set():
@@ -310,34 +340,51 @@ class AudioEngine:
                 block = self._in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            try:
-                processed = self._process_block(block)
-            except Exception as e:
-                logger.exception("Audio processing failed")
-                self._update_status_value(error=str(e))
-                self._stop_event.set()
-                return
-            # Queue depth diagnostic.
-            out_depth = self._queue_size(self._out_q)
-            self._update_status_value(queue_depth=out_depth)
-            try:
-                self._out_q.put(processed, timeout=0.2)
-            except queue.Full:
-                with self._lock:
-                    self.status.overflows += 1
-                logger.warning("Virtual output queue full; dropping processed block")
-            if self._monitor_enabled:
+            block = np.asarray(block)
+            if self._pending_in is None:
+                self._pending_in = block
+            else:
+                self._pending_in = np.concatenate([self._pending_in, block], axis=0)
+
+            chunk_frames = max(self._block_size, self._block_size * 4)
+            while self._pending_in is not None and self._pending_in.shape[0] >= chunk_frames:
+                chunk = self._pending_in[:chunk_frames]
+                self._pending_in = self._pending_in[chunk_frames:]
                 try:
-                    self._monitor_q.put(processed.copy(), timeout=0.2)
-                except queue.Full:
+                    processed = self._process_block(chunk)
+                except Exception as e:
+                    logger.exception("Audio processing failed")
+                    self._update_status_value(error=str(e))
+                    self._stop_event.set()
+                    return
+                self._enqueue_processed(processed)
+                self._update_status_value(queue_depth=self._queue_size(self._out_q))
+                try:
                     with self._lock:
-                        self.status.overflows += 1
-                    logger.warning("Monitor output queue full; dropping processed block")            # CPU metering.
-            try:
-                with self._lock:
-                    self.status.cpu_percent = self._proc.cpu_percent(interval=None)
-            except Exception:
-                pass
+                        self.status.cpu_percent = self._proc.cpu_percent(interval=None)
+                except Exception:
+                    pass
+            # Tail handling happens when the stream stops.
+
+        # Drain any partial chunk when stopping.
+        try:
+            if self._pending_in is not None and self._pending_in.shape[0] > 0:
+                pending = self._pending_in
+                bs = self._block_size
+                if pending.shape[0] % bs:
+                    pad = bs - (pending.shape[0] % bs)
+                    if pending.ndim == 2:
+                        pending = np.pad(pending, ((0, pad), (0, 0)))
+                    else:
+                        pending = np.pad(pending, (0, pad))
+                        pending = pending.reshape(-1, 1)
+                if pending.ndim == 1:
+                    pending = pending.reshape(-1, 1)
+                processed = self._process_block(pending)
+                self._enqueue_processed(processed)
+        except Exception as e:
+            logger.debug("Tail processing failed: %s", e)
+        self._pending_in = None
 
     # ---------------------------------------------------------------- public
 

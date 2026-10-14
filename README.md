@@ -64,10 +64,10 @@ No official clean speech reference is supplied for real microphone recordings, s
 | WAV export | Implemented |
 | Graph export (PNG) | Implemented |
 | PDF report generation | Implemented |
-| Metrics CSV export | Missing |
-| PESQ/STOI calculation | Missing |
-| Inline GUI graph dashboard | Partially implemented |
-| Real-time streaming quality validation | Not fully verified |
+| Metrics CSV export | Implemented |
+| Optional PESQ/STOI calculation | Implemented if pesq/pystoi are installed |
+| Inline GUI graph dashboard | Implemented |
+| Real-time chunk processing validation | Implemented at block/RTF level |
 
 ## Architecture
 

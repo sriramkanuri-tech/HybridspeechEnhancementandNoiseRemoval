@@ -81,3 +81,43 @@ def safe_pct_change(old, new):
     if abs(old) < 1e-12:
         return None
     return float((new - old) / abs(old) * 100.0)
+
+
+def _trim_for_metric(clean, enhanced):
+    n = min(len(clean), len(enhanced))
+    return clean[:n], enhanced[:n]
+
+
+def pesq_score(clean, enhanced, sr):
+    """Optional PESQ score. Returns None if unavailable or unsupported."""
+    clean = _mono(clean)
+    enhanced = _mono(enhanced)
+    clean, enhanced = _trim_for_metric(clean, enhanced)
+    if clean.size == 0 or enhanced.size == 0:
+        return None
+    try:
+        from pesq import pesq as pesq_fn
+    except Exception:
+        return None
+    try:
+        mode = "wb" if int(sr) >= 16000 else "nb"
+        return float(pesq_fn(int(sr), clean, enhanced, mode))
+    except Exception:
+        return None
+
+
+def stoi_score(clean, enhanced, sr):
+    """Optional STOI score. Returns None if unavailable or unsupported."""
+    clean = _mono(clean)
+    enhanced = _mono(enhanced)
+    clean, enhanced = _trim_for_metric(clean, enhanced)
+    if clean.size == 0 or enhanced.size == 0:
+        return None
+    try:
+        from pystoi import stoi as stoi_fn
+    except Exception:
+        return None
+    try:
+        return float(stoi_fn(clean, enhanced, int(sr), extended=False))
+    except Exception:
+        return None

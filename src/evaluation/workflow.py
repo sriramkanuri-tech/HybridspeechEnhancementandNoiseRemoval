@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import time
 from pathlib import Path
@@ -78,6 +79,23 @@ def run_methods(audio, sr, session_dir, nr, vp, methods):
     # write metrics
     try:
         (session_dir / "metrics.json").write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass
+    # Write a simple CSV summary for spreadsheet analysis.
+    try:
+        with (session_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Method", "Duration (s)", "RMS", "Peak", "Process Time (s)", "RTF", "Error"])
+            for method, info in results.items():
+                writer.writerow([
+                    method,
+                    info.get("duration", ""),
+                    info.get("rms", ""),
+                    info.get("peak", ""),
+                    info.get("process_time", ""),
+                    info.get("rtf", ""),
+                    info.get("error", ""),
+                ])
     except Exception:
         pass
     try:
