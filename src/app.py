@@ -28,8 +28,13 @@ def main():
     try:
         logdir = Path.home() / ".speech-enhancement-noise-removal"
         logdir.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.config.paths import models_dir
+            md = models_dir()
+        except Exception as e:
+            md = str(e)
         (logdir / "startup.log").write_text(
-            f"frozen={getattr(sys, 'frozen', False)}\nbundle={bundle_dir()}\nml={ml.detail}\n",
+            f"frozen={getattr(sys, 'frozen', False)}\nexec={sys.executable}\ncwd={Path.cwd()}\nbundle={bundle_dir()}\nMEIPASS={getattr(sys, '_MEIPASS', None)}\nmodels_dir={md}\nml={ml.detail}\n",
             encoding="utf-8",
         )
     except Exception:
