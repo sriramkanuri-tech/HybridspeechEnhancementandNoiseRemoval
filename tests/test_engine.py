@@ -61,8 +61,12 @@ def test_engine_process_block_ml_failure():
     ml = _FakeML(fail=True)
     eng = AudioEngine(cfg, pipe, ml)
     eng._apply_config_snapshot()
-    with pytest.raises(RuntimeError):
-        eng._process_block(np.ones(4, dtype=np.float32))
+    out = eng._process_block(np.ones(4, dtype=np.float32))
+    assert out.shape == (4, 1)
+    assert np.all(np.isfinite(out))
+    st = eng.get_status()
+    assert st.error is not None
+    assert "bypass" in st.error.lower()
 
 
 def test_engine_process_block_dsp():

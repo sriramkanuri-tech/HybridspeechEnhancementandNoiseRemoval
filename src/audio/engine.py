@@ -228,33 +228,39 @@ class AudioEngine:
         n_frames = max(1, audio_in.size)
 
         t0 = time.perf_counter()
-        if self._use_hybrid:
-            if self.ml is None or not getattr(self.ml, "available", False):
-                raise RuntimeError(getattr(self.ml, "detail", "ML model is not available."))
-            try:
-                self.pipeline.update_params(noise_reduction=self._noise_reduction * 0.5,
-                                            voice_preservation=self._voice_preservation)
-            except Exception:
-                pass
-            ml_out = self.ml.enhance_audio(audio_in, self._sample_rate)
-            y = self.pipeline.process_audio(np.asarray(ml_out, dtype=np.float32))
-            mode = "hybrid"
-        elif self._use_ml:
-            if self.ml is None or not getattr(self.ml, "available", False):
-                raise RuntimeError(getattr(self.ml, "detail", "ML model is not available."))
-            y = self.ml.enhance_audio(audio_in, self._sample_rate)
-            mode = "ml"
-        else:
-            # Reset DSP state is managed at start/stop. Keep params current.
-            try:
-                self.pipeline.update_params(
-                    noise_reduction=self._noise_reduction,
-                    voice_preservation=self._voice_preservation,
-                )
-            except Exception:
-                pass
-            y = self.pipeline.process_audio(audio_in)
-            mode = "dsp"
+        try:
+            if self._use_hybrid:
+                if self.ml is None or not getattr(self.ml, "available", False):
+                    raise RuntimeError(getattr(self.ml, "detail", "ML model is not available."))
+                try:
+                    self.pipeline.update_params(noise_reduction=self._noise_reduction * 0.5,
+                                                voice_preservation=self._voice_preservation)
+                except Exception:
+                    pass
+                ml_out = self.ml.enhance_audio(audio_in, self._sample_rate)
+                y = self.pipeline.process_audio(np.asarray(ml_out, dtype=np.float32))
+                mode = "hybrid"
+            elif self._use_ml:
+                if self.ml is None or not getattr(self.ml, "available", False):
+                    raise RuntimeError(getattr(self.ml, "detail", "ML model is not available."))
+                y = self.ml.enhance_audio(audio_in, self._sample_rate)
+                mode = "ml"
+            else:
+                try:
+                    self.pipeline.update_params(
+                        noise_reduction=self._noise_reduction,
+                        voice_preservation=self._voice_preservation,
+                    )
+                except Exception:
+                    pass
+                y = self.pipeline.process_audio(audio_in)
+                mode = "dsp"
+        except Exception as e:
+            logger.exception("Enhancement failed; using raw-audio bypass path")
+            y = audio_in.copy()
+            mode = "bypass"
+            self._update_status_value(error=f"Enhancement failed; raw audio bypass active: {e}", model_mode=mode)
+            t0 = time.perf_counter()
 
         y = np.asarray(y, dtype=np.float32).reshape(-1)
 
@@ -354,7 +360,7 @@ class AudioEngine:
             if self._use_ml or self._use_hybrid:
                 chunk_frames = max(self._block_size * 4, int(self._sample_rate * 0.5))
             else:
-                chunk_frames = max(self._block_size, self._block_size * 4)
+                chunk_frames = self._block_size
             chunk_frames = ((chunk_frames + self._block_size - 1) // self._block_size) * self._block_size
             while self._pending_in is not None and self._pending_in.shape[0] >= chunk_frames:
                 chunk = self._pending_in[:chunk_frames]
