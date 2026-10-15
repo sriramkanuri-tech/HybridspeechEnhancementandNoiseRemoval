@@ -649,7 +649,7 @@ class MainWindow(QMainWindow):
         try:
             fig = self.results_figure
             fig.clear()
-            ax = fig.add_subplot(111)
+            ax = fig.add_subplot(1, 2, 1)
             methods = []
             rms_values = []
             for method, info in res.items():
@@ -659,12 +659,38 @@ class MainWindow(QMainWindow):
                 rms_values.append(float(info.get("rms", 0.0)))
             if methods:
                 ax.bar(methods, rms_values, color="#4a90d9")
-                ax.set_title("Enhanced output RMS by method")
+                ax.set_title("Enhanced output RMS")
                 ax.set_ylabel("RMS")
-                ax.tick_params(axis="x", rotation=20)
+                ax.tick_params(axis="x", rotation=30)
             else:
                 ax.text(0.5, 0.5, "No successful enhancement results", ha="center", va="center")
                 ax.set_axis_off()
+            # Reference-based SNR is only available when processing from a clean reference.
+            ax2 = fig.add_subplot(1, 2, 2)
+            snr_methods = [m for m, info in res.items() if isinstance(info, dict) and "error" not in info]
+            improvements = []
+            available = False
+            for method, info in res.items():
+                if "error" in info:
+                    continue
+                value = info.get("snr_improvement")
+                improvements.append(value)
+                if value is not None:
+                    available = True
+            if snr_methods and available:
+                valid = [(m, v) for m, v in zip(snr_methods, improvements) if v is not None]
+                if valid:
+                    ax2.bar([m for m, _ in valid], [v for _, v in valid], color="#2a9d8f")
+                ax2.axhline(0.0, color="#333333", linewidth=1.0)
+                ax2.set_title("SNR improvement (dB)")
+                ax2.set_ylabel("dB")
+                ax2.tick_params(axis="x", rotation=30)
+                for m, v in valid:
+                    ax2.text(m, v, f"{v:.2f}", ha="center", va="bottom" if v >= 0 else "top", fontsize=8)
+            else:
+                ax2.text(0.5, 0.5, "Reference-based SNR unavailable:\nno clean reference supplied.\nSupported SNR is calculated in evaluation scripts.", ha="center", va="center", wrap=True)
+                ax2.set_axis_off()
+            fig.tight_layout()
             self.results_canvas.draw_idle()
         except Exception as e:
             self.results_text.append("Plot update failed: " + str(e))

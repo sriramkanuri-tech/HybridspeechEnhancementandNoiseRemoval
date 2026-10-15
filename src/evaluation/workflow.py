@@ -13,7 +13,7 @@ import soundfile as sf
 from src.audio.recording import save_wav
 from src.config.settings import AppConfig
 from src.dsp.pipeline import EnhancementPipeline
-from src.evaluation.metrics import rms
+from src.evaluation.metrics import rms, snr_db, snr_improvement
 from src.ml.enhancer import MLEnhancer
 
 
@@ -35,13 +35,23 @@ def _metrics(audio, sr, elapsed):
     }
 
 
-def run_methods(audio, sr, session_dir, nr, vp, methods):
+def run_methods(audio, sr, session_dir, nr, vp, methods, clean=None):
     audio = _mono(audio)
+    clean_mono = _mono(clean) if clean is not None else None
     session_dir = Path(session_dir)
     session_dir.mkdir(parents=True, exist_ok=True)
     save_wav(session_dir / "original.wav", audio, sr, 1)
     ml = MLEnhancer()
     results = {}
+    def _snr_fields(enhanced):
+        if clean_mono is None:
+            return {}
+        return {
+            "snr_input": snr_db(clean_mono, audio),
+            "snr_output": snr_db(clean_mono, enhanced),
+            "snr_improvement": snr_improvement(clean_mono, audio, enhanced),
+        }
+
     dsp_pipeline = EnhancementPipeline(noise_reduction=nr, voice_preservation=vp, sample_rate=sr, auto_gain=False)
     for method in methods:
         m = method.lower()
@@ -52,7 +62,7 @@ def run_methods(audio, sr, session_dir, nr, vp, methods):
                 elapsed = time.perf_counter() - t0
                 save_wav(session_dir / "enhanced_dsp.wav", out, sr, 1)
                 results["DSP"] = {"path": str(session_dir / "enhanced_dsp.wav"), "method": "dsp",
-                                  **_metrics(out, sr, elapsed)}
+                                  **_metrics(out, sr, elapsed), **_snr_fields(out)}
             elif m == "ml":
                 if not ml.available:
                     raise RuntimeError(ml.detail)
@@ -60,7 +70,7 @@ def run_methods(audio, sr, session_dir, nr, vp, methods):
                 elapsed = time.perf_counter() - t0
                 save_wav(session_dir / "enhanced_ml.wav", out, sr, 1)
                 results["ML"] = {"path": str(session_dir / "enhanced_ml.wav"), "method": "ml",
-                                 **_metrics(out, sr, elapsed)}
+                                 **_metrics(out, sr, elapsed), **_snr_fields(out)}
             elif m == "hybrid":
                 if not ml.available:
                     raise RuntimeError("ML unavailable: " + ml.detail)
@@ -85,7 +95,7 @@ def run_methods(audio, sr, session_dir, nr, vp, methods):
     try:
         with (session_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["Method", "Duration (s)", "RMS", "Peak", "Process Time (s)", "RTF", "Error"])
+            writer.writerow(["Method", "Duration (s)", "RMS", "Peak", "Process Time (s)", "RTF", "SNR Input (dB)", "SNR Output (dB)", "SNR Improvement (dB)", "Error"])
             for method, info in results.items():
                 writer.writerow([
                     method,
@@ -94,29 +104,31 @@ def run_methods(audio, sr, session_dir, nr, vp, methods):
                     info.get("peak", ""),
                     info.get("process_time", ""),
                     info.get("rtf", ""),
+                    info.get("snr_input", "") if info.get("snr_input") is not None else "Unavailable",
+                    info.get("snr_output", "") if info.get("snr_output") is not None else "Unavailable",
+                    info.get("snr_improvement", "") if info.get("snr_improvement") is not None else "Unavailable",
                     info.get("error", ""),
                 ])
     except Exception:
         pass
     try:
         from src.evaluation.plots import generate_all_plots
-        generate_all_plots(session_dir, audio, results, sr)
+        generate_all_plots(session_dir, audio, results, sr, clean=clean)
     except Exception:
         pass
     return results
 
 
-def run_all_methods(audio, sr, session_dir, nr, vp):
-    return run_methods(audio, sr, session_dir, nr, vp, ["dsp", "ml", "hybrid"])
+def run_all_methods(audio, sr, session_dir, nr, vp, clean=None):
+    return run_methods(audio, sr, session_dir, nr, vp, ["dsp", "ml", "hybrid"], clean=clean)
 
 
 def compute_metrics(clean, enhanced, sr):
     # helper for external tables
     c = _mono(clean)
     e = _mono(enhanced)
-    from src.evaluation.metrics import snr_db
-    try:
-        snr_in = snr_db(c, c)  # not meaningful for real recordings
-    except Exception:
-        snr_in = None
-    return {"rms": float(rms(e)), "peak": float(np.max(np.abs(e))) if e.size else 0.0}
+    return {
+        "rms": float(rms(e)),
+        "peak": float(np.max(np.abs(e))) if e.size else 0.0,
+        "snr": snr_db(c, e),
+    }

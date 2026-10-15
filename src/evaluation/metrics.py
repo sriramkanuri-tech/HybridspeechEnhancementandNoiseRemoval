@@ -45,19 +45,48 @@ def clipping_pct(x, threshold=0.99):
     return float(100.0 * np.mean(np.abs(x) >= threshold))
 
 
-def snr_db(clean, noisy):
+def snr_db(clean, noisy, clean_sr=None, noisy_sr=None):
+    """Reference-based SNR in dB.
+
+    clean and noisy must represent the same recording and time alignment. The
+    signals are trimmed only to a common finite length; one signal is never used
+    as its own clean reference. Return None when the measurement is undefined.
+    """
+    if clean_sr is not None and noisy_sr is not None and int(clean_sr) != int(noisy_sr):
+        raise ValueError("clean and noisy sample rates must match for SNR")
     clean = _mono(clean)
-    noise = _mono(noisy) - clean
-    n = min(len(clean), len(noise))
-    clean = clean[:n]
-    noise = noise[:n]
-    signal_power = float(np.mean(clean ** 2))
-    noise_power = float(np.mean(noise ** 2) + 1e-12)
-    return float(10 * np.log10(signal_power / noise_power + 1e-12))
+    noisy = _mono(noisy)
+    if clean.size == 0 or noisy.size == 0:
+        return None
+    n = min(clean.size, noisy.size)
+    if n < 1:
+        return None
+    clean = clean[:n].astype(np.float64)
+    noisy = noisy[:n].astype(np.float64)
+    if not (np.all(np.isfinite(clean)) and np.all(np.isfinite(noisy))):
+        return None
+    signal_power = float(np.sum(clean * clean))
+    noise_power = float(np.sum((noisy - clean) * (noisy - clean)))
+    if not np.isfinite(signal_power) or not np.isfinite(noise_power):
+        return None
+    if noise_power <= 1e-18:
+        # Exact equality cannot produce a finite, comparable SNR.
+        return None
+    if signal_power < 0.0:
+        return None
+    return float(10.0 * np.log10(max(signal_power, 0.0) / noise_power))
 
 
 def snr_improvement(clean, noisy, enhanced):
-    return snr_db(clean, enhanced) - snr_db(clean, noisy)
+    """SNR improvement in dB. Returns None if either reference measurement is unavailable."""
+    base = snr_db(clean, noisy)
+    out = snr_db(clean, enhanced)
+    if base is None or out is None:
+        return None
+    value = out - base
+    if not np.isfinite(value):
+        return None
+    return float(value)
 
 
 def rt_factor(process_time, duration):

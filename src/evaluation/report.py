@@ -22,7 +22,7 @@ def _img(path, width=460):
         return None
 
 
-def generate_pdf_report(session_dir, results):
+def generate_pdf_report(session_dir, results, clean=None, noisy=None, sr=None):
     session_dir = Path(session_dir)
     out = session_dir / "comparison_report.pdf"
     doc = SimpleDocTemplate(str(out), pagesize=letter, title="Speech Enhancement Report")
@@ -89,6 +89,61 @@ def generate_pdf_report(session_dir, results):
         story.append(Spacer(1, 6))
         story.append(Paragraph(caption, STYLES["Normal"]))
 
+    has_snr = any(isinstance(info, dict) and (
+        "snr_output" in info or "snr_input" in info
+    ) for info in results.values())
+    snr_rows = [["Method", "Input SNR (dB)", "Output SNR (dB)", "Improvement (dB)"]]
+    for method, info in results.items():
+        if not isinstance(info, dict) or "error" in info:
+            continue
+        if "snr_output" not in info and "snr_input" not in info:
+            continue
+        snr_rows.append([
+            method,
+            "Unavailable" if info.get("snr_input") is None else f"{info.get('snr_input'):.3f}",
+            "Unavailable" if info.get("snr_output") is None else f"{info.get('snr_output'):.3f}",
+            "Unavailable" if info.get("snr_improvement") is None else f"{info.get('snr_improvement'):.3f}",
+        ])
+    story.append(Paragraph("SNR Comparison", STYLES["Heading2"]))
+    if has_snr and len(snr_rows) > 1:
+        story.append(Paragraph(
+            "SNR improvement is calculated as output SNR minus noisy input SNR using the same clean reference. "
+            "Database-style line RMS and peak values are not treated as SNR. Method settings are saved with the session.",
+            STYLES["Normal"],
+        ))
+        snr_table = Table(snr_rows, repeatRows=1)
+        snr_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+        ]))
+        story.append(snr_table)
+        story.append(Spacer(1, 8))
+        snr_graphs = [
+            ("snr_before_after.png", "SNR Before and After Enhancement",
+             "Grouped comparison of noisy-input SNR and enhanced-output SNR for each successful method. Methods without a calculable reference-based SNR are marked unavailable."),
+            ("snr_improvement.png", "SNR Improvement by Method",
+             "SNR improvement is output SNR minus noisy-input SNR. Positive values indicate an improved signal-to-noise ratio under the measured clean reference."),
+        ]
+        for filename, title, caption in snr_graphs:
+            path = session_dir / filename
+            if not path.is_file():
+                continue
+            story.append(PageBreak())
+            story.append(Paragraph(title, STYLES["Heading2"]))
+            img = _img(path)
+            if img is not None:
+                story.append(img)
+            story.append(Spacer(6, 4))
+            story.append(Paragraph(caption, STYLES["Normal"]))
+    else:
+        story.append(Paragraph(
+            "Reference-based SNR unavailable: no clean reference was supplied for this session. "
+            "RMS, peak, waveform, spectrogram, and processing metrics remain available for live recordings.",
+            STYLES["Normal"],
+        ))
+        story.append(Spacer(1, 8))
     story.append(PageBreak())
     story.append(Paragraph("Metric limitations", STYLES["Heading2"]))
     story.append(Paragraph(

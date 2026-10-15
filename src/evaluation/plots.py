@@ -9,7 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.evaluation.metrics import rms, rms_dbfs, peak_amplitude, peak_dbfs, clipping_pct, frequency_band_energy
+from src.evaluation.metrics import rms, rms_dbfs, peak_amplitude, peak_dbfs, clipping_pct, frequency_band_energy, snr_db, snr_improvement
 
 
 def _mono(a):
@@ -25,7 +25,7 @@ def _read(path):
     return _mono(data), sr
 
 
-def generate_all_plots(session_dir, original, results, sr):
+def generate_all_plots(session_dir, original, results, sr, clean=None):
     session_dir = Path(session_dir)
     original = _mono(original)
     sr = float(sr)
@@ -173,9 +173,138 @@ def generate_all_plots(session_dir, original, results, sr):
     except Exception:
         pass
 
+    # Optional reference-based SNR graphs when a clean reference is available.
+    try:
+        if clean is not None:
+            clean_a = _mono(clean)
+            noisy_a = _mono(original)
+            method_outputs = {}
+            successful = {name: info for name, info in results.items()
+                          if isinstance(info, dict) and info.get("path") and Path(info["path"]).exists()}
+            for name, info in successful.items():
+                try:
+                    data, _ = _read(info["path"])
+                    method_outputs[name] = data
+                except Exception:
+                    continue
+            generate_snr_graphs(session_dir, clean_a, noisy_a, method_outputs, sr)
+    except Exception:
+        pass
+
     # compatibility aliases for expected files
     try:
         # ensure rms and peak aliases used earlier remain present
         pass
     except Exception:
         pass
+
+
+def generate_snr_graphs(session_dir, clean, noisy, method_outputs, sr, title_suffix="", filename_prefix=""):
+    """Save before/after and improvement SNR graphs when a clean reference exists."""
+    session_dir = Path(session_dir)
+    clean = _mono(clean).astype(np.float64)
+    noisy = _mono(noisy).astype(np.float64)
+    sr = float(sr)
+    # Avoid invalid arrays and unequal sample-rate measurement contexts through sr.
+    if clean.size < 8 or noisy.size < 8:
+        return
+    clean = clean[: min(len(clean), len(noisy))]
+    noisy = noisy[: min(len(noisy), len(clean))]
+    base_snr = snr_db(clean, noisy)
+    methods = list(method_outputs.keys())
+    before_values = [base_snr for _ in methods]
+    after_values = []
+    improvements = []
+    for method in methods:
+        audio = method_outputs.get(method)
+        if audio is None:
+            after_values.append(None)
+            improvements.append(None)
+            continue
+        try:
+            arr = _mono(audio).astype(np.float64)
+            arr = arr[: min(len(clean), len(arr))]
+            arr = arr[: len(clean)]
+            out_snr = snr_db(clean, arr)
+        except Exception:
+            out_snr = None
+        after_values.append(out_snr)
+        improvements.append(snr_improvement(clean, noisy, arr) if out_snr is not None else None)
+
+    # Before-and-after grouped bar chart.
+    try:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        valid_methods = methods
+        x = np.arange(len(valid_methods))
+        width = 0.36
+        before_bar_positions = x - width / 2.0
+        after_bar_positions = x + width / 2.0
+        plotted_before = [(before_bar_positions[i], before_values[i]) for i in range(len(methods))
+                         if before_values[i] is not None]
+        if plotted_before:
+            ax.bar([p[0] for p in plotted_before], [p[1] for p in plotted_before], width,
+                   color="#8c8c8c", label="Before enhancement (noisy input)")
+        for i, value in enumerate(after_values):
+            if value is not None:
+                ax.bar(after_bar_positions[i], value, width, color="#1f77b4", label="After enhancement" if i == 0 else "")
+        ax.set_xticks(x)
+        ax.set_xticklabels(methods)
+        ax.set_ylabel("SNR (dB)")
+        ax.set_title("SNR Before and After Enhancement" + title_suffix)
+        ax.grid(True, axis="y", alpha=0.3)
+        # De-duplicate legend labels.
+        handles, labels = ax.get_legend_handles_labels()
+        unique = {}
+        for h, l in zip(handles, labels):
+            if l not in unique:
+                unique[l] = h
+        ax.legend(unique.values(), unique.keys(), fontsize=8)
+        # Add labels.
+        for i in range(len(methods)):
+            if before_values[i] is not None:
+                ax.text(before_bar_positions[i], before_values[i], f"{before_values[i]:.2f}",
+                        ha="center", va="bottom", fontsize=8, rotation=0)
+            if after_values[i] is not None:
+                ax.text(after_bar_positions[i], after_values[i], f"{after_values[i]:.2f}",
+                        ha="center", va="bottom", fontsize=8, rotation=0)
+            else:
+                ax.text(after_bar_positions[i], 0.0, "Unavailable", ha="center",
+                        va="bottom", fontsize=8, color="#b22222", rotation=90)
+        plt.tight_layout()
+        plt.savefig(session_dir / f"{filename_prefix}snr_before_after.png", dpi=110)
+        plt.close()
+    except Exception:
+        try:
+            plt.close()
+        except Exception:
+            pass
+
+    # SNR improvement chart.
+    try:
+        fig, ax = plt.subplots(figsize=(7, 4))
+        x = np.arange(len(methods))
+        valid_indices = [i for i, v in enumerate(improvements) if v is not None]
+        if valid_indices:
+            ax.bar([x[i] for i in valid_indices], [improvements[i] for i in valid_indices],
+                   color="#2a9d8f", width=0.6, label="SNR improvement (dB)")
+        for i in valid_indices:
+            ax.text(x[i], improvements[i], f"{improvements[i]:.2f}", ha="center",
+                    va="bottom" if improvements[i] >= 0 else "top", fontsize=8)
+        ax.axhline(0.0, color="#333333", linewidth=1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(methods)
+        ax.set_ylabel("SNR improvement (dB)")
+        ax.set_title("SNR Improvement by Method" + title_suffix)
+        ax.grid(True, axis="y", alpha=0.3)
+        for i, v in enumerate(improvements):
+            if v is None:
+                ax.text(x[i], 0.0, "Unavailable", ha="center", va="bottom",
+                        fontsize=8, color="#b22222", rotation=90)
+        plt.tight_layout()
+        plt.savefig(session_dir / f"{filename_prefix}snr_improvement.png", dpi=110)
+        plt.close()
+    except Exception:
+        try:
+            plt.close()
+        except Exception:
+            pass
